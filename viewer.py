@@ -134,6 +134,40 @@ class JitterViewerApp:
         self.lbl_file = tk.Label(toolbar, text="파일을 선택하세요.", anchor="w", fg="#555")
         self.lbl_file.pack(side=tk.LEFT, padx=4)
 
+        # ── 하단: 슬라이더 + 체크박스 (main_frame보다 먼저 pack해야 공간 확보됨) ──
+        bottom_frame = tk.Frame(self.root, bd=1, relief=tk.RAISED, pady=4)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # 슬라이더
+        slider_frame = tk.Frame(bottom_frame)
+        slider_frame.pack(side=tk.LEFT, padx=8)
+        tk.Label(slider_frame, text="위치 이동:").pack(side=tk.LEFT)
+        self.slider_var = tk.IntVar(value=0)
+        self.slider = tk.Scale(
+            slider_frame,
+            variable=self.slider_var,
+            from_=0, to=0,
+            orient=tk.HORIZONTAL,
+            length=250,
+            command=self._on_slider_change,
+        )
+        self.slider.pack(side=tk.LEFT)
+        self.lbl_pos = tk.Label(slider_frame, text="위치: -", width=20, anchor="w")
+        self.lbl_pos.pack(side=tk.LEFT, padx=4)
+
+        # 센서 체크박스
+        cb_frame = tk.LabelFrame(bottom_frame, text="센서 선택", padx=4, pady=2)
+        cb_frame.pack(side=tk.LEFT, padx=12)
+        for i, sensor in enumerate(SENSOR_COLS):
+            cb = tk.Checkbutton(
+                cb_frame,
+                text=sensor,
+                variable=self.sensor_vars[sensor],
+                fg=SENSOR_COLORS[i],
+                command=self._refresh_graph,
+            )
+            cb.pack(side=tk.LEFT)
+
         # 메인 영역 (좌: 맵, 우: 그래프)
         main_frame = tk.Frame(self.root)
         main_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -188,39 +222,6 @@ class JitterViewerApp:
                 labels.append(lbl)
             self.stat_labels[sensor] = labels
 
-        # ── 하단: 슬라이더 + 체크박스 ──
-        bottom_frame = tk.Frame(self.root, bd=1, relief=tk.RAISED, pady=4)
-        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # 슬라이더
-        slider_frame = tk.Frame(bottom_frame)
-        slider_frame.pack(side=tk.LEFT, padx=8)
-        tk.Label(slider_frame, text="위치 이동:").pack(side=tk.LEFT)
-        self.slider_var = tk.IntVar(value=0)
-        self.slider = tk.Scale(
-            slider_frame,
-            variable=self.slider_var,
-            from_=0, to=0,
-            orient=tk.HORIZONTAL,
-            length=250,
-            command=self._on_slider_change,
-        )
-        self.slider.pack(side=tk.LEFT)
-        self.lbl_pos = tk.Label(slider_frame, text="위치: -", width=20, anchor="w")
-        self.lbl_pos.pack(side=tk.LEFT, padx=4)
-
-        # 센서 체크박스
-        cb_frame = tk.LabelFrame(bottom_frame, text="센서 선택", padx=4, pady=2)
-        cb_frame.pack(side=tk.LEFT, padx=12)
-        for i, sensor in enumerate(SENSOR_COLS):
-            cb = tk.Checkbutton(
-                cb_frame,
-                text=sensor,
-                variable=self.sensor_vars[sensor],
-                fg=SENSOR_COLORS[i],
-                command=self._refresh_graph,
-            )
-            cb.pack(side=tk.LEFT)
 
     def _bind_keys(self):
         self.root.bind("<Left>", lambda e: self._move_position(-1))
@@ -228,8 +229,14 @@ class JitterViewerApp:
 
     # ── 파일 열기 ─────────────────────────────
     def _on_open_file(self):
+        # 스크립트 기준 data/ 폴더를 초기 디렉토리로 설정
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        initial_dir = os.path.join(script_dir, "data")
+        if not os.path.isdir(initial_dir):
+            initial_dir = script_dir
         path = filedialog.askopenfilename(
             title="FSD 파일 선택",
+            initialdir=initial_dir,
             filetypes=[("FSD files", "*.fsd"), ("All files", "*.*")],
         )
         if path:
