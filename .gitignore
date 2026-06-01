@@ -1,14 +1,7 @@
-# Python
+# Python 캐시
 __pycache__/
 *.py[cod]
 *.pyo
-*.pyd
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
-*.whl
 
 # 가상환경
 .venv/
@@ -22,9 +15,6 @@ env/
 *.suo
 *.user
 
-# PyQt 컴파일 결과
-*.pyc
-
 # 테스트/커버리지
 .pytest_cache/
 .coverage
@@ -34,11 +24,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# 입출력 데이터 (로컬 전용)
-input/
-output/
-tools/raw/
 
 # Claude Code 설정 (로컬 전용)
 .claude/settings.local.json
