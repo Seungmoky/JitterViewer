@@ -19,6 +19,15 @@ from matplotlib.figure import Figure
 SENSOR_COLS = ["Sa", "Sb", "Sc", "Sd", "Se", "Sf"]
 SENSOR_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c"]
 
+# Pressure 컬럼 (옵션 - 파일에 따라 없을 수 있음)
+PRESSURE_COL = "Pressure"
+PRESSURE_COLOR = "#34495e"
+
+# 그래프에 표시할 센서 순서 (행×열: 위=Sc/Sf/Sd, 아래=Sa/Se/Sb)
+SENSOR_LAYOUT = ["Sc", "Sf", "Sd", "Sa", "Se", "Sb"]
+# 센서명 → 색상 맵
+SENSOR_COLOR_MAP = {s: SENSOR_COLORS[i] for i, s in enumerate(SENSOR_COLS)}
+
 
 # ─────────────────────────────────────────────
 # FsdParser: .fsd 파일 파싱 클래스
@@ -31,14 +40,16 @@ class FsdParser:
           {
             "pos": (x, y),
             "label": "baseline" | "(x, y)",
-            "frames": DataFrame[frame_idx, Sa, Sb, Sc, Sd, Se, Sf]
+            "frames": DataFrame[frame_idx, Sa, Sb, Sc, Sd, Se, Sf(, Pressure)]
           },
           ...
         ]
+    parse()는 (groups, has_pressure) 튜플을 반환한다.
     """
 
-    def parse(self, filepath: str) -> list[dict]:
+    def parse(self, filepath: str) -> tuple[list[dict], bool]:
         rows = []
+        has_pressure = False
         with open(filepath, "r", encoding="utf-8") as f:
             lines = f.readlines()
 
@@ -61,10 +72,18 @@ class FsdParser:
                 sf = int(parts[8])
             except ValueError:
                 continue
-            rows.append((coord_x, coord_y, sa, sb, sc, sd, se, sf))
+            # Pressure 컬럼이 있으면 파싱 (없으면 None)
+            pressure = None
+            if len(parts) > 9:
+                try:
+                    pressure = int(parts[9])
+                    has_pressure = True
+                except ValueError:
+                    pass
+            rows.append((coord_x, coord_y, sa, sb, sc, sd, se, sf, pressure))
 
         if not rows:
-            return []
+            return [], False
 
         # (coord_x, coord_y) 기준으로 연속된 행들을 그룹핑
         groups = []
@@ -84,10 +103,12 @@ class FsdParser:
         if prev_pos is not None:
             groups.append(self._build_group(prev_pos, current_frames))
 
-        return groups
+        return groups, has_pressure
 
     def _build_group(self, pos: tuple, frame_rows: list) -> dict:
-        df = pd.DataFrame(frame_rows, columns=SENSOR_COLS)
+        # Pressure 포함 7 컬럼 (Pressure가 없는 파일은 해당 열이 None으로 채워짐)
+        cols = SENSOR_COLS + [PRESSURE_COL]
+        df = pd.DataFrame(frame_rows, columns=cols)
         df.insert(0, "frame_idx", range(len(df)))
 
         if pos == (-1, -1):
@@ -112,11 +133,13 @@ class JitterViewerApp:
         self.groups: list[dict] = []
         self.current_idx: int = 0
         self.filepath: str = ""
+        self.has_pressure: bool = False  # 현재 파일에 Pressure 열이 있는지 여부
 
-        # 센서 체크박스 상태
+        # 센서 + Pressure 체크박스 상태
         self.sensor_vars: dict[str, tk.BooleanVar] = {
             s: tk.BooleanVar(value=True) for s in SENSOR_COLS
         }
+        self.sensor_vars[PRESSURE_COL] = tk.BooleanVar(value=True)
 
         self._build_ui()
         self._bind_keys()
@@ -167,6 +190,16 @@ class JitterViewerApp:
                 command=self._refresh_graph,
             )
             cb.pack(side=tk.LEFT)
+        # Pressure 체크박스 (파일에 Pressure 열이 없으면 비활성화)
+        self.cb_pressure = tk.Checkbutton(
+            cb_frame,
+            text=PRESSURE_COL,
+            variable=self.sensor_vars[PRESSURE_COL],
+            fg=PRESSURE_COLOR,
+            command=self._refresh_graph,
+            state=tk.DISABLED,
+        )
+        self.cb_pressure.pack(side=tk.LEFT)
 
         # 메인 영역 (좌: 맵, 우: 그래프)
         main_frame = tk.Frame(self.root)
@@ -190,13 +223,11 @@ class JitterViewerApp:
         right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         self.graph_fig = Figure(figsize=(7, 5.5), dpi=96)
-        # 6개 센서를 2열 3행 subplot으로 구성
         self.graph_axes = []
-        for i in range(6):
-            ax = self.graph_fig.add_subplot(3, 2, i + 1)
-            self.graph_axes.append(ax)
         self.graph_canvas = FigureCanvasTkAgg(self.graph_fig, master=right_panel)
         self.graph_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # 초기 axes 생성 (has_pressure=False 상태)
+        self._create_graph_axes()
 
         # 통계 패널
         self.stat_frame = tk.Frame(right_panel, bd=1, relief=tk.GROOVE)
@@ -221,7 +252,37 @@ class JitterViewerApp:
                 lbl.grid(row=row_idx, column=col, padx=2)
                 labels.append(lbl)
             self.stat_labels[sensor] = labels
+        # Pressure 통계 행 (항상 생성, 데이터 없으면 "-" 표시)
+        pressure_row = len(SENSOR_COLS) + 2
+        tk.Label(self.stat_frame, text=PRESSURE_COL, font=("", 8), fg=PRESSURE_COLOR).grid(
+            row=pressure_row, column=0, padx=2, sticky="w"
+        )
+        pressure_labels = []
+        for col in range(1, 4):
+            lbl = tk.Label(self.stat_frame, text="-", font=("", 8), width=14)
+            lbl.grid(row=pressure_row, column=col, padx=2)
+            pressure_labels.append(lbl)
+        self.stat_labels[PRESSURE_COL] = pressure_labels
 
+
+    def _create_graph_axes(self):
+        """has_pressure 상태에 따라 subplot 레이아웃을 재구성한다."""
+        self.graph_fig.clear()
+        self.graph_axes = []
+        if self.has_pressure:
+            # 2행 3열: 센서, 우측 1열 전체 높이: Pressure
+            gs = self.graph_fig.add_gridspec(2, 4)
+            for i in range(6):
+                ax = self.graph_fig.add_subplot(gs[i // 3, i % 3])
+                self.graph_axes.append(ax)
+            ax_pressure = self.graph_fig.add_subplot(gs[0:2, 3])  # 우측 전체 높이
+            self.graph_axes.append(ax_pressure)
+        else:
+            # 2행 3열: 센서만
+            gs = self.graph_fig.add_gridspec(2, 3)
+            for i in range(6):
+                ax = self.graph_fig.add_subplot(gs[i // 3, i % 3])
+                self.graph_axes.append(ax)
 
     def _bind_keys(self):
         self.root.bind("<Left>", lambda e: self._move_position(-1))
@@ -229,14 +290,8 @@ class JitterViewerApp:
 
     # ── 파일 열기 ─────────────────────────────
     def _on_open_file(self):
-        # 스크립트 기준 data/ 폴더를 초기 디렉토리로 설정
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        initial_dir = os.path.join(script_dir, "data")
-        if not os.path.isdir(initial_dir):
-            initial_dir = script_dir
         path = filedialog.askopenfilename(
             title="FSD 파일 선택",
-            initialdir=initial_dir,
             filetypes=[("FSD files", "*.fsd"), ("All files", "*.*")],
         )
         if path:
@@ -244,7 +299,7 @@ class JitterViewerApp:
 
     def _load_file(self, path: str):
         try:
-            self.groups = self.parser.parse(path)
+            self.groups, new_has_pressure = self.parser.parse(path)
         except Exception as e:
             tk.messagebox.showerror("오류", f"파일 파싱 실패:\n{e}")
             return
@@ -252,6 +307,17 @@ class JitterViewerApp:
         self.filepath = path
         self.lbl_file.config(text=os.path.basename(path))
         self.current_idx = 0
+
+        # Pressure 상태가 바뀐 경우 레이아웃 재구성
+        if new_has_pressure != self.has_pressure:
+            self.has_pressure = new_has_pressure
+            self._create_graph_axes()
+
+        # Pressure 체크박스 활성화/비활성화
+        if self.has_pressure:
+            self.cb_pressure.config(state=tk.NORMAL)
+        else:
+            self.cb_pressure.config(state=tk.DISABLED)
 
         # 슬라이더 범위 업데이트
         n = max(len(self.groups) - 1, 0)
@@ -351,23 +417,41 @@ class JitterViewerApp:
         label = group["label"]
         fname = os.path.basename(self.filepath) if self.filepath else ""
 
-        # 센서별로 개별 subplot에 점(scatter)으로 표시
-        for i, sensor in enumerate(SENSOR_COLS):
-            ax = self.graph_axes[i]
+        # 센서별로 개별 subplot에 점(scatter)으로 표시 (SENSOR_LAYOUT 순서로 배치)
+        for plot_idx, sensor in enumerate(SENSOR_LAYOUT):
+            ax = self.graph_axes[plot_idx]
+            color = SENSOR_COLOR_MAP[sensor]
             visible = self.sensor_vars[sensor].get()
             if visible:
                 ax.scatter(
                     df["frame_idx"],
                     df[sensor],
-                    color=SENSOR_COLORS[i],
+                    color=color,
                     s=12,
                     zorder=2,
                 )
-            ax.set_title(sensor, fontsize=8, color=SENSOR_COLORS[i], fontweight="bold")
+            ax.set_title(sensor, fontsize=8, color=color, fontweight="bold")
             ax.set_xlabel("frame", fontsize=7)
             ax.set_ylabel("value (u16)", fontsize=7)
             ax.tick_params(labelsize=6)
             ax.grid(True, alpha=0.3)
+
+        # Pressure subplot (파일에 Pressure 열이 있고 체크박스가 활성화된 경우)
+        if self.has_pressure and len(self.graph_axes) > 6:
+            ax_p = self.graph_axes[6]
+            if self.sensor_vars[PRESSURE_COL].get():
+                ax_p.scatter(
+                    df["frame_idx"],
+                    df[PRESSURE_COL],
+                    color=PRESSURE_COLOR,
+                    s=12,
+                    zorder=2,
+                )
+            ax_p.set_title(PRESSURE_COL, fontsize=8, color=PRESSURE_COLOR, fontweight="bold")
+            ax_p.set_xlabel("frame", fontsize=7)
+            ax_p.set_ylabel("value", fontsize=7)
+            ax_p.tick_params(labelsize=6)
+            ax_p.grid(True, alpha=0.3)
 
         # 전체 제목 (suptitle)
         self.graph_fig.suptitle(
@@ -392,6 +476,21 @@ class JitterViewerApp:
             labels[0].config(text=f"{mean_val:.2f}")
             labels[1].config(text=f"{std_val:.4f}")
             labels[2].config(text=f"{range_val}")
+
+        # Pressure 통계 (데이터가 있으면 계산, 없으면 "-")
+        p_labels = self.stat_labels[PRESSURE_COL]
+        if self.has_pressure and PRESSURE_COL in df.columns:
+            vals = df[PRESSURE_COL].dropna()
+            if not vals.empty:
+                p_labels[0].config(text=f"{vals.mean():.2f}")
+                p_labels[1].config(text=f"{vals.std():.4f}")
+                p_labels[2].config(text=f"{vals.max() - vals.min():.0f}")
+            else:
+                for lbl in p_labels:
+                    lbl.config(text="-")
+        else:
+            for lbl in p_labels:
+                lbl.config(text="-")
 
 
 # ─────────────────────────────────────────────
